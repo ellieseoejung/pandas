@@ -42,7 +42,6 @@ from pandas.core.indexes.datetimelike import (
 from pandas.tseries.offsets import (
     CDay, prefix_mapping)
 
-from pandas.core.tools.timedeltas import to_timedelta
 from pandas.util._decorators import Appender, cache_readonly, Substitution
 import pandas.core.common as com
 import pandas.tseries.offsets as offsets
@@ -176,6 +175,7 @@ class DatetimeIndex(DatetimeArrayMixin, DatelikeOps, TimelikeOps,
     pandas.to_datetime : Convert argument to datetime
     """
     _resolution = cache_readonly(DatetimeArrayMixin._resolution.fget)
+    _shallow_copy = Index._shallow_copy
 
     _typ = 'datetimeindex'
     _join_precedence = 10
@@ -241,9 +241,11 @@ class DatetimeIndex(DatetimeArrayMixin, DatelikeOps, TimelikeOps,
 
         if data is None:
             # TODO: Remove this block and associated kwargs; GH#20535
-            return cls._generate_range(start, end, periods, name, freq,
-                                       tz=tz, normalize=normalize,
-                                       closed=closed, ambiguous=ambiguous)
+            result = cls._generate_range(start, end, periods,
+                                         freq=freq, tz=tz, normalize=normalize,
+                                         closed=closed, ambiguous=ambiguous)
+            result.name = name
+            return result
 
         if not isinstance(data, (np.ndarray, Index, ABCSeries,
                                  DatetimeArrayMixin)):
@@ -297,6 +299,9 @@ class DatetimeIndex(DatetimeArrayMixin, DatelikeOps, TimelikeOps,
                 data = data.astype(np.int64, copy=False)
             subarr = data.view(_NS_DTYPE)
 
+        assert isinstance(subarr, np.ndarray), type(subarr)
+        assert subarr.dtype == 'M8[ns]', subarr.dtype
+
         subarr = cls._simple_new(subarr, name=name, freq=freq, tz=tz)
         if dtype is not None:
             if not is_dtype_equal(subarr.dtype, dtype):
@@ -315,17 +320,6 @@ class DatetimeIndex(DatetimeArrayMixin, DatelikeOps, TimelikeOps,
 
         return subarr._deepcopy_if_needed(ref_to_data, copy)
 
-    @classmethod
-    @Appender(DatetimeArrayMixin._generate_range.__doc__)
-    def _generate_range(cls, start, end, periods, name=None, freq=None,
-                        tz=None, normalize=False, ambiguous='raise',
-                        closed=None):
-        out = super(DatetimeIndex, cls)._generate_range(
-            start, end, periods, freq,
-            tz=tz, normalize=normalize, ambiguous=ambiguous, closed=closed)
-        out.name = name
-        return out
-
     def _convert_for_op(self, value):
         """ Convert value to be insertable to ndarray """
         if self._has_same_tz(value):
@@ -339,22 +333,8 @@ class DatetimeIndex(DatetimeArrayMixin, DatelikeOps, TimelikeOps,
         we require the we have a dtype compat for the values
         if we are passed a non-dtype compat, then coerce using the constructor
         """
-
-        if getattr(values, 'dtype', None) is None:
-            # empty, but with dtype compat
-            if values is None:
-                values = np.empty(0, dtype=_NS_DTYPE)
-                return cls(values, name=name, freq=freq, tz=tz,
-                           dtype=dtype, **kwargs)
-            values = np.array(values, copy=False)
-
-        if not is_datetime64_dtype(values):
-            values = ensure_int64(values).view(_NS_DTYPE)
-
-        values = getattr(values, 'values', values)
-
-        assert isinstance(values, np.ndarray), "values is not an np.ndarray"
-        assert is_datetime64_dtype(values)
+        # DatetimeArray._simple_new will accept either i8 or M8[ns] dtypes
+        assert isinstance(values, np.ndarray), type(values)
 
         result = super(DatetimeIndex, cls)._simple_new(values, freq, tz,
                                                        **kwargs)
@@ -545,13 +525,6 @@ class DatetimeIndex(DatetimeArrayMixin, DatelikeOps, TimelikeOps,
 
         return Series(values, index=index, name=name)
 
-    @Appender(DatetimeArrayMixin.to_period.__doc__)
-    def to_period(self, freq=None):
-        from pandas.core.indexes.period import PeriodIndex
-
-        result = DatetimeArrayMixin.to_period(self, freq=freq)
-        return PeriodIndex(result, name=self.name)
-
     def snap(self, freq='S'):
         """
         Snap time stamps to nearest occurring frequency
@@ -622,23 +595,6 @@ class DatetimeIndex(DatetimeArrayMixin, DatelikeOps, TimelikeOps,
                         (this.freq is not None or other.freq is not None)):
                     result.freq = to_offset(result.inferred_freq)
             return result
-
-    def to_perioddelta(self, freq):
-        """
-        Calculate TimedeltaIndex of difference between index
-        values and index converted to periodIndex at specified
-        freq. Used for vectorized offsets
-
-        Parameters
-        ----------
-        freq: Period frequency
-
-        Returns
-        -------
-        y: TimedeltaIndex
-        """
-        return to_timedelta(self.asi8 - self.to_period(freq)
-                            .to_timestamp().asi8)
 
     def union_many(self, others):
         """
@@ -1168,6 +1124,11 @@ class DatetimeIndex(DatetimeArrayMixin, DatelikeOps, TimelikeOps,
     is_year_end = wrap_field_accessor(DatetimeArrayMixin.is_year_end)
     is_leap_year = wrap_field_accessor(DatetimeArrayMixin.is_leap_year)
 
+    tz_localize = wrap_array_method(DatetimeArrayMixin.tz_localize, True)
+    tz_convert = wrap_array_method(DatetimeArrayMixin.tz_convert, True)
+    to_perioddelta = wrap_array_method(DatetimeArrayMixin.to_perioddelta,
+                                       False)
+    to_period = wrap_array_method(DatetimeArrayMixin.to_period, True)
     normalize = wrap_array_method(DatetimeArrayMixin.normalize, True)
     to_julian_date = wrap_array_method(DatetimeArrayMixin.to_julian_date,
                                        False)
